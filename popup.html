@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 220px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      text-align: center;
+      background: #fafafa;
+    }
+    .logo {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 12px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #2196f3, #3f51b5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    h1 {
+      font-size: 18px;
+      color: #333;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 20px;
+    }
+    .toggle-btn {
+      display: inline-block;
+      padding: 10px 32px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.2s;
+      outline: none;
+      min-width: 120px;
+    }
+    .toggle-btn:active { transform: scale(0.96); }
+    .toggle-btn.on {
+      background: #e53935;
+      color: white;
+      box-shadow: 0 2px 8px rgba(229,57,53,0.3);
+    }
+    .toggle-btn.off {
+      background: #43a047;
+      color: white;
+      box-shadow: 0 2px 8px rgba(67,160,71,0.3);
+    }
+    .toggle-btn:disabled {
+      background: #ccc;
+      box-shadow: none;
+      cursor: not-allowed;
+    }
+    .status {
+      margin-top: 14px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .status.active { color: #e53935; }
+    .status.inactive { color: #43a047; }
+    .status.error { color: #999; }
+    .footer {
+      margin-top: 16px;
+      font-size: 11px;
+      color: #bbb;
+    }
+  </style>
+</head>
+<body>
+  <div class="logo">S</div>
+  <h1>SmarTest</h1>
+  <div class="subtitle">Extension</div>
+  <button id="toggleBtn" class="toggle-btn on">Disable</button>
+  <div id="status" class="status active">Active</div>
+  <div class="footer">Click to toggle protection</div>
+  <script src="popup.js"></script>
+</body>
+</html>
