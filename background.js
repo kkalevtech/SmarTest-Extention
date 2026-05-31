@@ -1,7 +1,12 @@
-// ── Authorized email list ──
-const AUTHORIZED_EMAILS = [
-  'constantinekalev27@itpg-varna.bg'
-  //'magicpet2008@gmail.com'
+// ── Cloudflare Worker config ──
+// ⚠️ Change these after deploying your Worker (see cloudflare-worker/README.md)
+const WORKER_URL = 'https://smartest-auth.kkalev-tech.workers.dev';
+const AUTH_TOKEN = 'smartest-token-2026';
+
+// ── Fallback emails (used only if the Worker is unreachable) ──
+const FALLBACK_EMAILS = [
+  'constantinekalev27@itpg-varna.bg',
+  'bogdankuzmanian27@itpg-varna.bg'
 ];
 
 // ── Auth state ──
@@ -13,26 +18,58 @@ async function setUnauthorized(reason, debug) {
   await chrome.storage.local.set({ authorized: false, authEmail: '', authMethod: 'none', authReason: reason, authDebug: debug || '' });
 }
 
+// ── Fetch authorized emails from Cloudflare Worker ──
+let currentAuthorizedEmails = null;
+
+async function getAuthorizedEmails() {
+  // Use cache if we already fetched successfully this session
+  if (currentAuthorizedEmails) return currentAuthorizedEmails;
+
+  try {
+    console.log('[SmarTest] Fetching authorized emails from Worker...');
+    const resp = await fetch(WORKER_URL, {
+      headers: { 'X-Auth-Token': AUTH_TOKEN }
+    });
+    if (resp.ok) {
+      const emails = await resp.json();
+      if (Array.isArray(emails) && emails.length > 0) {
+        currentAuthorizedEmails = emails.map(e => e.toLowerCase().trim());
+        console.log('[SmarTest] Worker returned:', currentAuthorizedEmails);
+        return currentAuthorizedEmails;
+      }
+      console.log('[SmarTest] Worker returned empty list');
+    } else {
+      console.log('[SmarTest] Worker returned', resp.status);
+    }
+  } catch (e) {
+    console.log('[SmarTest] Worker fetch error:', e.message);
+  }
+
+  // Fallback
+  console.log('[SmarTest] Using fallback email list');
+  currentAuthorizedEmails = FALLBACK_EMAILS;
+  return currentAuthorizedEmails;
+}
+
+function clearEmailCache() {
+  currentAuthorizedEmails = null;
+}
+
 // ── Method 1: Chrome profile email (fastest) ──
-async function checkProfileEmail() {
+async function checkProfileEmail(authorizedEmails) {
   try {
     const info = await chrome.identity.getProfileUserInfo();
-    return info.email || null;
+    return (info.email && authorizedEmails.includes(info.email)) ? info.email : null;
   } catch { return null; }
 }
 
 // ── Method 2: Google account detection via background tab ──
 // A real browser tab uses the user's actual cookie jar (not the extension's
 // partitioned cookie store), so Google sees valid session cookies and returns
-// the logged-in accounts. We extract emails directly from the DOM — no CORS,
-// no cookie masking, no SAPISIDHASH needed.
-//
-// We try several URLs in sequence since Google deprecates/updates endpoints.
-// SignOutOptions is tried FIRST — it's a static HTML page that lists ALL
-// signed-in accounts (not just the primary one), and renders immediately.
+// the logged-in accounts.
 const DISCOVERY_URLS = [
-  { url: 'https://accounts.google.com/SignOutOptions', wait: 2000 },  // All accounts, fast
-  { url: 'https://myaccount.google.com/?hl=en', wait: 4000 },         // Primary account, SPA
+  { url: 'https://accounts.google.com/SignOutOptions', wait: 2000 },
+  { url: 'https://myaccount.google.com/?hl=en', wait: 4000 },
 ];
 
 async function extractEmailsFromTab(tabId) {
@@ -52,22 +89,21 @@ async function extractEmailsFromTab(tabId) {
 
     const emails = new Set();
 
-    // Pattern 1: Common Google data attribute + JSON patterns
-    //   "email":"user@domain.com", email:'user@domain.com', "user@domain.com" in email context
+    // Pattern 1: "email":"user@domain.com", email:'user@domain.com'
     const p1 = html.match(/["']?email["']?\s*[:=]\s*["']([^"']+@[^"']+)["']/gi);
     if (p1) p1.forEach(s => {
       const m = s.match(/([a-zA-Z0-9.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
       if (m) emails.add(m[1].toLowerCase());
     });
 
-    // Pattern 2: aria-label / data-email / data-accountemail attributes
+    // Pattern 2: data-email / aria-label attributes
     const p2 = html.match(/(?:data-email|data-accountemail|aria-label)\s*=\s*["']([^"']+@[^"']+)["']/gi);
     if (p2) p2.forEach(s => {
       const m = s.match(/([a-zA-Z0-9.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
       if (m) emails.add(m[1].toLowerCase());
     });
 
-    // Pattern 3: Plain text email addresses
+    // Pattern 3: Plain text emails
     if (text) {
       const p3 = text.match(/[a-zA-Z0-9.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
       if (p3) p3.forEach(e => emails.add(e.toLowerCase()));
@@ -83,7 +119,7 @@ async function extractEmailsFromTab(tabId) {
 }
 
 async function tryUrl(urlObj) {
-  const { url, wait } = typeof urlObj === 'string' ? { url: urlObj, wait: 2000 } : urlObj;
+  const { url, wait } = urlObj;
   return new Promise(resolve => {
     let cleanedUp = false;
     function cleanup(tabId) {
@@ -141,17 +177,22 @@ async function checkAuthorization() {
   try {
     console.log('[SmarTest] Checking authorization...');
 
-    // 1. Profile email (immediate, no tab needed)
-    const profileEmail = await checkProfileEmail();
-    if (profileEmail && AUTHORIZED_EMAILS.includes(profileEmail)) {
+    // Fetch authorized list — try Worker, fallback to hardcoded
+    clearEmailCache();
+    const authorizedEmails = await getAuthorizedEmails();
+    console.log('[SmarTest] Authorized emails:', authorizedEmails);
+
+    // 1. Profile email (immediate)
+    const profileEmail = await checkProfileEmail(authorizedEmails);
+    if (profileEmail) {
       await setAuthorized(profileEmail, 'chrome_profile');
       return true;
     }
 
-    // 2. Google account detection via real browser tab (uses user's cookies, bypasses MV3 partition)
+    // 2. Google account detection via background tab
     const accounts = await checkViaDiscoveryTab();
     for (const email of accounts) {
-      if (AUTHORIZED_EMAILS.includes(email)) {
+      if (authorizedEmails.includes(email)) {
         await setAuthorized(email, 'list_accounts_tab');
         return true;
       }
@@ -159,7 +200,7 @@ async function checkAuthorization() {
 
     await setUnauthorized(
       'No authorized Google account detected.',
-      JSON.stringify({ foundAccounts: accounts, hint: 'Open Gmail and sign in, then click Refresh. Check console for details.' })
+      JSON.stringify({ foundAccounts: accounts })
     );
     return false;
   } finally {
@@ -176,14 +217,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     checkAuthorization().then(a => sendResponse({ authorized: a }));
     return true;
   }
-  // Secondary path: content script found accounts on a Google page
   if (message.action === 'verifyAccounts') {
-    const matched = (message.accounts || []).find(e => AUTHORIZED_EMAILS.includes(e));
-    if (matched) {
-      setAuthorized(matched, 'content_script_list_accounts').then(() => sendResponse({ authorized: true }));
-    } else {
-      sendResponse({ authorized: false });
-    }
+    // Fetch authorized list and check
+    getAuthorizedEmails().then(authorizedEmails => {
+      const matched = (message.accounts || []).find(e => authorizedEmails.includes(e));
+      if (matched) {
+        setAuthorized(matched, 'content_script_list_accounts').then(() => sendResponse({ authorized: true }));
+      } else {
+        sendResponse({ authorized: false });
+      }
+    });
     return true;
   }
 });
