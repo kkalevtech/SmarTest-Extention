@@ -1,13 +1,6 @@
 // ── Cloudflare Worker config ──
-// ⚠️ Change these after deploying your Worker (see cloudflare-worker/README.md)
 const WORKER_URL = 'https://smartest-auth.kkalev-tech.workers.dev';
 const AUTH_TOKEN = 'smartest-token-2026';
-
-// ── Fallback emails (used only if the Worker is unreachable) ──
-const FALLBACK_EMAILS = [
-  'constantinekalev27@itpg-varna.bg',
-  'bogdankuzmanian27@itpg-varna.bg'
-];
 
 // ── Auth state ──
 async function setAuthorized(email, method) {
@@ -45,10 +38,7 @@ async function getAuthorizedEmails() {
     console.log('[SmarTest] Worker fetch error:', e.message);
   }
 
-  // Fallback
-  console.log('[SmarTest] Using fallback email list');
-  currentAuthorizedEmails = FALLBACK_EMAILS;
-  return currentAuthorizedEmails;
+  return [];
 }
 
 function clearEmailCache() {
@@ -177,7 +167,7 @@ async function checkAuthorization() {
   try {
     console.log('[SmarTest] Checking authorization...');
 
-    // Fetch authorized list — try Worker, fallback to hardcoded
+    // Fetch authorized list from Cloudflare Worker
     clearEmailCache();
     const authorizedEmails = await getAuthorizedEmails();
     console.log('[SmarTest] Authorized emails:', authorizedEmails);
