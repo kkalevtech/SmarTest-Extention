@@ -3,8 +3,18 @@
   "name": "SmarTest Extension",
   "version": "1.0.0",
   "description": "Browser extension for SmarTest",
-  "permissions": ["storage", "activeTab"],
+  "permissions": [
+    "identity",
+    "identity.email",
+    "storage",
+    "activeTab",
+    "cookies",
+    "scripting"
+  ],
   "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

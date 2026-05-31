@@ -12,78 +12,47 @@
       background: #fafafa;
     }
     .logo {
-      width: 48px;
-      height: 48px;
-      margin: 0 auto 12px;
+      width: 48px; height: 48px; margin: 0 auto 12px;
       border-radius: 12px;
       background: linear-gradient(135deg, #2196f3, #3f51b5);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-size: 24px;
-      font-weight: bold;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 24px; font-weight: bold;
     }
-    h1 {
-      font-size: 18px;
-      color: #333;
-      margin-bottom: 4px;
+    h1 { font-size: 18px; color: #333; margin-bottom: 4px; }
+    .subtitle { font-size: 12px; color: #888; margin-bottom: 20px; }
+    .icon { font-size: 36px; margin-bottom: 8px; }
+    .title { font-size: 16px; font-weight: 600; color: #444; margin-bottom: 6px; }
+    .desc { font-size: 12px; color: #888; line-height: 1.5; }
+    .detail { font-size: 11px; color: #aaa; margin-top: 8px; word-break: break-all; }
+    .refresh-btn {
+      margin-top: 14px; padding: 6px 20px; border: 1px solid #ccc;
+      border-radius: 6px; background: white; cursor: pointer; font-size: 12px; color: #555;
     }
-    .subtitle {
-      font-size: 12px;
-      color: #888;
-      margin-bottom: 20px;
+    .refresh-btn:active { background: #f0f0f0; }
+    .hint { font-size: 11px; color: #999; margin-top: 10px; line-height: 1.5; }
+    #statusIndicator {
+      padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      margin-bottom: 16px;
     }
-    .toggle-btn {
-      display: inline-block;
-      padding: 10px 32px;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 600;
-      transition: all 0.2s;
-      outline: none;
-      min-width: 120px;
-    }
-    .toggle-btn:active { transform: scale(0.96); }
-    .toggle-btn.on {
-      background: #e53935;
-      color: white;
-      box-shadow: 0 2px 8px rgba(229,57,53,0.3);
-    }
-    .toggle-btn.off {
-      background: #43a047;
-      color: white;
-      box-shadow: 0 2px 8px rgba(67,160,71,0.3);
-    }
-    .toggle-btn:disabled {
-      background: #ccc;
-      box-shadow: none;
-      cursor: not-allowed;
-    }
-    .status {
-      margin-top: 14px;
-      font-size: 13px;
-      font-weight: 500;
-    }
-    .status.active { color: #e53935; }
-    .status.inactive { color: #43a047; }
-    .status.error { color: #999; }
-    .footer {
-      margin-top: 16px;
-      font-size: 11px;
-      color: #bbb;
-    }
+    .status-ok { background: #e8f5e9; color: #2e7d32; }
+    .status-no { background: #fce4ec; color: #c62828; }
   </style>
 </head>
 <body>
   <div class="logo">S</div>
   <h1>SmarTest</h1>
   <div class="subtitle">Extension</div>
-  <button id="toggleBtn" class="toggle-btn on">Disable</button>
-  <div id="status" class="status active">Active</div>
-  <div class="footer">Click to toggle protection</div>
+
+  <div id="statusIndicator" class="status-no">Checking...</div>
+
+  <div class="icon" id="authIcon">🔒</div>
+  <div class="title" id="authTitle">Not authorized</div>
+  <div class="desc" id="authDesc">No session detected.</div>
+  <div class="detail" id="authDetail"></div>
+
+  <button id="refreshBtn" class="refresh-btn">🔄 Refresh</button>
+  <div class="hint" id="hint"></div>
+
   <script src="popup.js"></script>
 </body>
 </html>

@@ -1,40 +1,39 @@
-document.addEventListener('DOMContentLoaded', async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const btn = document.getElementById('toggleBtn');
-  const statusEl = document.getElementById('status');
+async function refreshAuth() {
+  document.getElementById('statusIndicator').textContent = 'Checking...';
+  document.getElementById('statusIndicator').className = 'status-no';
+  await chrome.runtime.sendMessage({ action: 'checkAuth' });
+  await updateUI();
+}
 
-  // Get current state from the content script
-  try {
-    const response = await chrome.tabs.sendMessage(tab.id, { action: 'getState' });
-    updateUI(response.enabled);
-  } catch {
-    statusEl.textContent = 'Reload the page';
-    statusEl.className = 'status error';
-    btn.disabled = true;
-    return;
+async function updateUI() {
+  const auth = await chrome.storage.local.get(['authorized', 'authEmail', 'authMethod']);
+  const indicator = document.getElementById('statusIndicator');
+  const icon = document.getElementById('authIcon');
+  const title = document.getElementById('authTitle');
+  const desc = document.getElementById('authDesc');
+  const detail = document.getElementById('authDetail');
+  const hint = document.getElementById('hint');
+
+  if (auth.authorized) {
+    indicator.textContent = '✅ Authorized';
+    indicator.className = 'status-ok';
+    icon.textContent = '✅';
+    title.textContent = 'Authorized';
+    desc.textContent = 'Protection active.';
+    detail.textContent = auth.authEmail || '';
+    hint.textContent = '';
+  } else {
+    indicator.textContent = '❌ Unauthorized';
+    indicator.className = 'status-no';
+    icon.textContent = '🔒';
+    title.textContent = 'Not authorized';
+    desc.textContent = 'No Google account matched the authorized list.';
+    detail.textContent = '';
+    hint.textContent = 'Make sure you are signed into Gmail in this browser, then click Refresh.';
   }
+}
 
-  btn.addEventListener('click', async () => {
-    try {
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'toggle' });
-      updateUI(response.enabled);
-    } catch {
-      statusEl.textContent = 'Error toggling';
-      statusEl.className = 'status error';
-    }
-  });
-
-  function updateUI(enabled) {
-    if (enabled) {
-      btn.textContent = 'Disable';
-      btn.className = 'toggle-btn on';
-      statusEl.textContent = 'Active';
-      statusEl.className = 'status active';
-    } else {
-      btn.textContent = 'Enable';
-      btn.className = 'toggle-btn off';
-      statusEl.textContent = 'Inactive';
-      statusEl.className = 'status inactive';
-    }
-  }
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('refreshBtn').addEventListener('click', refreshAuth);
+  updateUI();
 });
