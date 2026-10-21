@@ -28,6 +28,13 @@ function isOnGooglePage() {
   return GOOGLE_DOMAINS.some(d => location.hostname === d);
 }
 
+// Sign-in screens and the account chooser can list remembered addresses that
+// still require a password, so they must never count as a signed-in profile.
+function isSignInPage() {
+  if (document.querySelector('input[type="password"]')) return true;
+  return /accounts\.google\.com\/(?:v3\/)?(?:signin|ServiceLogin|AccountChooser|identifier)\b/i.test(location.href);
+}
+
 function addEmailsFromValue(value, emails) {
   if (!value) return;
   const matches = String(value).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
@@ -38,6 +45,10 @@ function addEmailsFromValue(value, emails) {
 // ("Inbox - user@gmail.com - Gmail") and Google services render an account chip
 // whose aria-label is "Google Account: Name (user@gmail.com)".
 function collectEmailsFromPage() {
+  // accounts.google.com and sign-in screens list addresses that may not be
+  // authenticated; the background worker checks those against session cookies.
+  if (location.hostname === 'accounts.google.com' || isSignInPage()) return [];
+
   const emails = new Set();
   addEmailsFromValue(document.title, emails);
 
@@ -64,12 +75,16 @@ function whenDomReady() {
 // profile on the page is the reliable silent signal. Give the account chip a
 // moment to render on single-page apps before falling back to ListAccounts.
 async function collectGoogleAccounts() {
+  if (isSignInPage()) return [];
+
   const emails = new Set();
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    collectEmailsFromPage().forEach(email => emails.add(email));
-    if (emails.size > 0) break;
-    if (attempt < 4) await new Promise(r => setTimeout(r, 500));
+  if (location.hostname !== 'accounts.google.com') {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      collectEmailsFromPage().forEach(email => emails.add(email));
+      if (emails.size > 0) break;
+      if (attempt < 4) await new Promise(r => setTimeout(r, 500));
+    }
   }
 
   if (emails.size === 0 || location.hostname === 'accounts.google.com') {
@@ -140,17 +155,44 @@ async function init() {
   // 1. Fast path — already authorized
   if (authorized) {
     if (enabled) injectBlocker(true);
+
+    // A sign-in page or account chooser means the user may have just logged
+    // out. Confirm with the background worker, which checks Google's session
+    // cookies, instead of trusting the remembered address shown on the page.
+    if (isOnGooglePage()) {
+      await whenDomReady();
+      if (isSignInPage()) {
+        try {
+          const resp = await chrome.runtime.sendMessage({ action: 'checkAuth' });
+          if (resp?.authorized === false) setBlockerEnabled(false);
+        } catch {}
+      }
+    }
     return;
   }
 
   // 2. On a Google page — read the signed-in profile from this page
   if (isOnGooglePage()) {
     await whenDomReady();
+
     const accounts = await collectGoogleAccounts();
-    if (accounts.length > 0) {
-      const resp = await chrome.runtime.sendMessage({ action: 'verifyAccounts', accounts });
-      if (resp?.authorized && enabled) injectBlocker(true);
-    }
+    try {
+      if (accounts.length > 0) {
+        const resp = await chrome.runtime.sendMessage({ action: 'verifyAccounts', accounts });
+        if (resp?.authorized && enabled) {
+          injectBlocker(true);
+        } else if (resp?.authorized === false) {
+          setBlockerEnabled(false);
+        }
+      } else {
+        // No trustworthy address on this page (sign-in screen, chooser, or the
+        // account chip hasn't rendered). Let the background decide using its
+        // session-cookie check.
+        const resp = await chrome.runtime.sendMessage({ action: 'checkAuth' });
+        if (resp?.authorized && enabled) injectBlocker(true);
+        else if (resp?.authorized === false) setBlockerEnabled(false);
+      }
+    } catch {}
     return;
   }
 

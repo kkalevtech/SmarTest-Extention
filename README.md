@@ -4,7 +4,7 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 
 ## Features
 
-- **Email-based authorization** — protection only runs for Google accounts on the authorized list, checked silently without opening tabs
+- **Email-based authorization** — protection only runs for Google accounts on the authorized list, checked silently without opening tabs; signing out revokes access immediately
 - **On/off toggle** — pause or resume protection from the toolbar at any time
 - Fakes an active fullscreen session (`fullscreenElement`, `fullscreenEnabled`, and vendor-prefixed variants) so pages believe fullscreen is still on
 - Makes `requestFullscreen` / `exitFullscreen` succeed without changing the real window, and suppresses `fullscreenchange` / `fullscreenerror` events
@@ -36,6 +36,8 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 The extension checks the Google account signed into your open Google tabs (Gmail, YouTube, Google Drive, etc.), plus the Chrome profile email. If any detected address is on the authorized list, protection is unlocked.
 
 The check is **silent**: it never opens tabs or windows. It uses the Chrome profile email and, when available, reads the signed-in Google address straight from the page (Gmail's title or the Google account chip) or queries `ListAccounts` where that request is same-origin.
+
+Google's authentication cookies are checked first. Signing out deletes them, so a remembered address on the account chooser or a pre-filled sign-in page never counts as a valid session.
 
 The authorized list is served by the Cloudflare Worker configured at the top of `background.js`:
 
@@ -83,9 +85,10 @@ The toolbar badge shows the current state:
 
 ### Authorization flow
 
-1. On install/startup, the **background service worker** (`background.js`) runs two silent checks:
+1. On install/startup, the **background service worker** (`background.js`) runs the silent checks:
+   - **Session** — `chrome.cookies.getAll()` confirms Google's authentication cookies (`SID`, `__Secure-*PSID`, etc.) still exist. Missing cookies mean the user is signed out and authorization is revoked immediately
    - **Fast path** — `chrome.identity.getProfileUserInfo()` gets the Chrome profile's primary email
-   - **Open tabs** — `chrome.scripting.executeScript` reads the signed-in address from Google tabs that are already open: Gmail's page title or the Google account chip. `ListAccounts` is also used on `accounts.google.com`, where the request is same-origin. No tab or window is ever created
+   - **Open tabs** — `chrome.scripting.executeScript` reads the signed-in address from Google tabs that are already open: Gmail's page title or the Google account chip. Sign-in pages, password forms, and the account chooser are explicitly ignored. `ListAccounts` is also used on `accounts.google.com`, where the request is same-origin. No tab or window is ever created
 2. Detected emails are compared against the list fetched from the Cloudflare Worker
 3. If any email matches, the result (`authorized: true`) is cached in `chrome.storage.local`
 4. When a page loads, the **content script** (`content.js`) reads both the cached auth state and the on/off flag. Protection is injected only when **authorized && enabled**

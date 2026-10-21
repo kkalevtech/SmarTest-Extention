@@ -42,6 +42,35 @@ async function updateBadge() {
   } catch {}
 }
 
+// ── Google session check ──
+// The account chooser keeps listing an address after sign-out, but Google
+// removes its authentication cookies. Returns true (signed in), false (signed
+// out) or null (cookie API unavailable).
+const GOOGLE_SESSION_COOKIES = [
+  'SID',
+  'HSID',
+  'SSID',
+  'LSID',
+  'APISID',
+  'SAPISID',
+  '__Secure-1PSID',
+  '__Secure-3PSID',
+  '__Secure-1PAPISID',
+  '__Secure-3PAPISID',
+  '__Secure-1PSIDTS',
+  '__Secure-3PSIDTS'
+];
+
+async function hasGoogleSession() {
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: 'google.com' });
+    if (!Array.isArray(cookies)) return null;
+    return cookies.some(c => GOOGLE_SESSION_COOKIES.includes(c.name) && c.value);
+  } catch {
+    return null;
+  }
+}
+
 // ── Auth state ──
 async function setAuthorized(email, method) {
   await chrome.storage.local.set({ authorized: true, authEmail: email, authMethod: method, authReason: '' });
@@ -110,7 +139,8 @@ const GOOGLE_TAB_PATTERNS = [
 // Runs inside a Google tab (injected via chrome.scripting). Reads the signed-in
 // profile straight from the page: Gmail puts the address in document.title and
 // every Google service renders an account chip with "Google Account: ... (email)".
-// ListAccounts is still used when it is same-origin (accounts.google.com).
+// Sign-in pages and the account chooser are ignored — they list addresses that
+// still require a password.
 async function collectGoogleAccountsFromPage() {
   const emails = new Set();
 
@@ -122,10 +152,42 @@ async function collectGoogleAccountsFromPage() {
 
   let checked = false;
 
+  // Password field or an explicit sign-in URL: not an authenticated session.
+  const passwordField = document.querySelector('input[type="password"]');
+  const signInUrl = /accounts\.google\.com\/(?:v3\/)?(?:signin|ServiceLogin|identifier)\b/i.test(location.href);
+  if (passwordField || signInUrl) {
+    return { accounts: [], checked: true };
+  }
+
+  // accounts.google.com: ListAccounts is same-origin and authoritative. Never
+  // read DOM emails here, because the account chooser lists signed-out accounts.
+  if (location.hostname === 'accounts.google.com') {
+    try {
+      const resp = await fetch('https://accounts.google.com/ListAccounts?pid=1', {
+        credentials: 'include'
+      });
+      if (resp.ok) {
+        // A redirect to sign-in means the remembered account is not signed in.
+        if (/ServiceLogin|AccountChooser|\/signin/i.test(resp.url)) {
+          return { accounts: [], checked: true };
+        }
+
+        checked = true;
+        const text = await resp.text();
+        const re = /["']?email["']?\s*:\s*["']([^"']+)["']/gi;
+        let match;
+        while ((match = re.exec(text)) !== null) {
+          emails.add(match[1].toLowerCase());
+        }
+      }
+    } catch {}
+    return { accounts: [...emails], checked };
+  }
+
   // Gmail: "Inbox (1) - user@gmail.com - Gmail"
   add(document.title);
 
-  // Google account chip / chooser rows (href is stable across locales)
+  // Google account chip (href is stable across locales)
   const nodes = document.querySelectorAll(
     'a[href*="SignOutOptions"], a[aria-label^="Google Account"], button[aria-label^="Google Account"], [data-email]'
   );
@@ -134,17 +196,6 @@ async function collectGoogleAccountsFromPage() {
     add(el.getAttribute('data-email'));
     add(el.getAttribute('title'));
   }
-
-  // accounts.google.com: returns every account signed into the browser.
-  try {
-    const resp = await fetch('https://accounts.google.com/ListAccounts?pid=1', {
-      credentials: 'include'
-    });
-    if (resp.ok) {
-      checked = true;
-      add(await resp.text());
-    }
-  } catch {}
 
   if (emails.size > 0) checked = true;
 
@@ -209,6 +260,15 @@ async function checkAuthorization() {
   isChecking = true;
   try {
     console.log('[SmarTest] Checking authorization...');
+
+    // A signed-out Google session invalidates protection immediately, even if
+    // the account chooser still shows a remembered address.
+    const session = await hasGoogleSession();
+    if (session === false) {
+      console.log('[SmarTest] Google session not found; signing out');
+      await setUnauthorized('Not signed in to Google.', JSON.stringify({ session: false }));
+      return false;
+    }
 
     // Fetch authorized list from Cloudflare Worker
     clearEmailCache();
@@ -285,15 +345,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.action === 'verifyAccounts') {
-    // Fetch authorized list and check
-    getAuthorizedEmails().then(authorizedEmails => {
+    // Google session cookies are the source of truth: a remembered address on
+    // the account chooser must not authorize anyone once the session is gone.
+    hasGoogleSession().then(async session => {
+      if (session === false) {
+        await setUnauthorized('Not signed in to Google.', JSON.stringify({ session: false }));
+        sendResponse({ authorized: false });
+        return;
+      }
+
+      const authorizedEmails = await getAuthorizedEmails();
       const matched = (message.accounts || []).find(e => authorizedEmails.includes(e));
       if (matched) {
-        setAuthorized(matched, 'content_script_list_accounts').then(() => sendResponse({ authorized: true }));
+        await setAuthorized(matched, 'content_script_list_accounts');
+        sendResponse({ authorized: true });
       } else {
         sendResponse({ authorized: false });
       }
-    });
+    }).catch(() => sendResponse({ authorized: false }));
     return true;
   }
 });
