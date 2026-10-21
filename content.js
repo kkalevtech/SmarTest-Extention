@@ -1,9 +1,9 @@
 // ── SmarTest content script ──
 //
 // Protection only runs when the browser is authorized (see background.js) AND
-// the toolbar toggle is on (default: enabled). The auth logic is mirrored here
-// so it also works on Google pages, where a same-origin ListAccounts request
-// can see every signed-in account.
+// the toolbar toggle is on (default: enabled). On Google pages the auth check
+// runs here too, reading the signed-in address directly from the page so it
+// works without opening anything.
 
 const DEFAULT_ENABLED = true;
 
@@ -26,6 +26,58 @@ function isEnabled(value) {
 
 function isOnGooglePage() {
   return GOOGLE_DOMAINS.some(d => location.hostname === d);
+}
+
+function addEmailsFromValue(value, emails) {
+  if (!value) return;
+  const matches = String(value).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
+  if (matches) matches.forEach(email => emails.add(email.toLowerCase()));
+}
+
+// Read the signed-in address from the page itself. Gmail puts it in the title
+// ("Inbox - user@gmail.com - Gmail") and Google services render an account chip
+// whose aria-label is "Google Account: Name (user@gmail.com)".
+function collectEmailsFromPage() {
+  const emails = new Set();
+  addEmailsFromValue(document.title, emails);
+
+  const nodes = document.querySelectorAll(
+    'a[href*="SignOutOptions"], a[aria-label^="Google Account"], button[aria-label^="Google Account"], [data-email]'
+  );
+  for (const el of nodes) {
+    addEmailsFromValue(el.getAttribute('aria-label'), emails);
+    addEmailsFromValue(el.getAttribute('data-email'), emails);
+    addEmailsFromValue(el.getAttribute('title'), emails);
+  }
+
+  return [...emails];
+}
+
+function whenDomReady() {
+  if (document.readyState !== 'loading') return Promise.resolve();
+  return new Promise(resolve => {
+    document.addEventListener('DOMContentLoaded', resolve, { once: true });
+  });
+}
+
+// Chrome blocks cross-origin ListAccounts from mail.google.com, so the visible
+// profile on the page is the reliable silent signal. Give the account chip a
+// moment to render on single-page apps before falling back to ListAccounts.
+async function collectGoogleAccounts() {
+  const emails = new Set();
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    collectEmailsFromPage().forEach(email => emails.add(email));
+    if (emails.size > 0) break;
+    if (attempt < 4) await new Promise(r => setTimeout(r, 500));
+  }
+
+  if (emails.size === 0 || location.hostname === 'accounts.google.com') {
+    const fromEndpoint = await fetchListAccounts();
+    fromEndpoint.forEach(email => emails.add(email));
+  }
+
+  return [...emails];
 }
 
 // Tell blocker.js (running in the page context) whether to block or not.
@@ -69,7 +121,6 @@ async function getState() {
   return {
     enabled: isEnabled(enabled),
     authorized: authorized === true,
-    hasAuthState: typeof authorized === 'boolean',
   };
 }
 
@@ -84,7 +135,7 @@ async function refreshProtection() {
 }
 
 async function init() {
-  const { enabled, authorized, hasAuthState } = await getState();
+  const { enabled, authorized } = await getState();
 
   // 1. Fast path — already authorized
   if (authorized) {
@@ -92,9 +143,10 @@ async function init() {
     return;
   }
 
-  // 2. On a Google page → same-origin ListAccounts WILL work
+  // 2. On a Google page — read the signed-in profile from this page
   if (isOnGooglePage()) {
-    const accounts = await fetchListAccounts();
+    await whenDomReady();
+    const accounts = await collectGoogleAccounts();
     if (accounts.length > 0) {
       const resp = await chrome.runtime.sendMessage({ action: 'verifyAccounts', accounts });
       if (resp?.authorized && enabled) injectBlocker(true);
@@ -102,17 +154,8 @@ async function init() {
     return;
   }
 
-  // 3. Non-Google page with cached false — still try ListAccounts
-  if (hasAuthState) {
-    const accounts = await fetchListAccounts();
-    if (accounts.length > 0) {
-      const resp = await chrome.runtime.sendMessage({ action: 'verifyAccounts', accounts });
-      if (resp?.authorized && enabled) injectBlocker(true);
-    }
-    return; // Respect cached false
-  }
-
-  // 4. No cached state — ask background
+  // 3. No cached state or cached false — ask the background worker. It checks
+  //    the Chrome profile and any Google tabs that are already open.
   try {
     const response = await chrome.runtime.sendMessage({ action: 'checkAuth' });
     if (response?.authorized && enabled) injectBlocker(true);

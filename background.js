@@ -107,38 +107,65 @@ const GOOGLE_TAB_PATTERNS = [
   'https://www.youtube.com/*'
 ];
 
-function extractEmailsFromListAccounts(text) {
+// Runs inside a Google tab (injected via chrome.scripting). Reads the signed-in
+// profile straight from the page: Gmail puts the address in document.title and
+// every Google service renders an account chip with "Google Account: ... (email)".
+// ListAccounts is still used when it is same-origin (accounts.google.com).
+async function collectGoogleAccountsFromPage() {
   const emails = new Set();
-  const re = /["']?email["']?\s*:\s*["']([^"']+)["']/gi;
-  let match;
-  while ((match = re.exec(text)) !== null) {
-    emails.add(match[1].toLowerCase().trim());
+
+  const add = value => {
+    if (!value) return;
+    const matches = String(value).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
+    if (matches) matches.forEach(email => emails.add(email.toLowerCase()));
+  };
+
+  let checked = false;
+
+  // Gmail: "Inbox (1) - user@gmail.com - Gmail"
+  add(document.title);
+
+  // Google account chip / chooser rows (href is stable across locales)
+  const nodes = document.querySelectorAll(
+    'a[href*="SignOutOptions"], a[aria-label^="Google Account"], button[aria-label^="Google Account"], [data-email]'
+  );
+  for (const el of nodes) {
+    add(el.getAttribute('aria-label'));
+    add(el.getAttribute('data-email'));
+    add(el.getAttribute('title'));
   }
-  return [...emails];
+
+  // accounts.google.com: returns every account signed into the browser.
+  try {
+    const resp = await fetch('https://accounts.google.com/ListAccounts?pid=1', {
+      credentials: 'include'
+    });
+    if (resp.ok) {
+      checked = true;
+      add(await resp.text());
+    }
+  } catch {}
+
+  if (emails.size > 0) checked = true;
+
+  return { accounts: [...emails], checked };
 }
 
-// Returns the ListAccounts body, or null when this tab cannot be checked.
-async function fetchListAccountsInTab(tabId) {
+// Returns { accounts, checked } for a Google tab. checked === true means the
+// page gave us a real signal (email found or ListAccounts responded).
+async function readGoogleAccountsInTab(tabId) {
   try {
     const [injection] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: async () => {
-        try {
-          const resp = await fetch('https://accounts.google.com/ListAccounts?pid=1', {
-            credentials: 'include',
-            headers: { 'Referer': 'https://www.google.com/' }
-          });
-          return resp.ok ? await resp.text() : null;
-        } catch {
-          return null;
-        }
-      }
+      func: collectGoogleAccountsFromPage
     });
 
-    return typeof injection?.result === 'string' ? injection.result : null;
-  } catch {
-    return null;
-  }
+    if (injection?.result && Array.isArray(injection.result.accounts)) {
+      return injection.result;
+    }
+  } catch {}
+
+  return { accounts: [], checked: false };
 }
 
 async function checkOpenGoogleTabs() {
@@ -159,11 +186,11 @@ async function checkOpenGoogleTabs() {
   for (const tab of tabs) {
     if (typeof tab.id !== 'number') continue;
 
-    const text = await fetchListAccountsInTab(tab.id);
-    if (text === null) continue;
+    const result = await readGoogleAccountsInTab(tab.id);
+    if (!result.checked) continue;
 
     checked = true;
-    extractEmailsFromListAccounts(text).forEach(email => accounts.add(email));
+    result.accounts.forEach(email => accounts.add(email));
   }
 
   console.log('[SmarTest] Open Google tabs checked:', checked, 'accounts:', [...accounts]);
