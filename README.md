@@ -4,6 +4,8 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 
 ## Features
 
+- **Email-based authorization** — protection only runs for Google accounts on the authorized list
+- **On/off toggle** — pause or resume protection from the toolbar at any time
 - Fakes an active fullscreen session (`fullscreenElement`, `fullscreenEnabled`, and vendor-prefixed variants) so pages believe fullscreen is still on
 - Makes `requestFullscreen` / `exitFullscreen` succeed without changing the real window, and suppresses `fullscreenchange` / `fullscreenerror` events
 - Prevents visibility change detection (`visibilityState`, `hidden`, `webkit*`)
@@ -11,7 +13,6 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 - Blocks `pagehide`, `mouseleave`, `lostpointercapture` events
 - Overrides `hasFocus()` to always return `true`
 - Throttles `requestAnimationFrame` when the page attempts to detect hidden state
-- One-click on/off toggle from the toolbar popup — no account or login required
 
 ## Installation
 
@@ -30,20 +31,66 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 3. Select `manifest.json` from the folder
 4. The extension loads temporarily (persistent installation requires signing via Mozilla Add-on Store)
 
+## Authorization
+
+The extension checks **all Google accounts** you're signed into in this browser (Gmail, YouTube, Google Drive, etc.), not just the Chrome profile email. If any of them is on the authorized list, protection is unlocked.
+
+The authorized list is served by the Cloudflare Worker configured at the top of `background.js`:
+
+```js
+const WORKER_URL = 'https://smartest-auth.kkalev-tech.workers.dev';
+const AUTH_TOKEN = 'smartest-token-2026';
+```
+
+### Signing in
+
+1. Make sure you are signed into Google in this browser (open `https://mail.google.com` to check)
+2. Open the popup — it shows **✅ Authorized** with the matched email
+3. If it shows **❌ Unauthorized**, click **🔄 Refresh authorization**
+
+The authorization result is cached in `chrome.storage.local` and re-checked on install and browser startup.
+
+### Incognito mode (optional)
+
+1. Go to `chrome://extensions`
+2. Find **SmarTest Extension** → **Details**
+3. Enable **Allow in incognito**
+
+> ⚠️ In incognito you must sign into Google again (incognito doesn't share session cookies).
+
 ## Usage
 
 1. Click the **S** icon in the toolbar to open the popup
-2. Use the **Protection** switch to turn the extension on or off
+2. Once authorized, use the **Protection** switch to turn protection on or off
 3. Protection is **ON by default**
 4. Open tabs update immediately when you flip the switch — no page reload needed
+5. If authorization expires, the switch is locked until you refresh authorization
+
+The toolbar badge shows the current state:
+
+| Badge | Meaning |
+| ----- | ------- |
+| **ON** (green) | Authorized and protection is on |
+| **OFF** (grey) | Authorized but protection is paused |
+| **AUTH** (red) | Not authorized — protection is locked |
 
 > **Note**: Tabs that were already open before the extension was installed must be reloaded once so the content script can attach.
 
-The toolbar badge shows the current state: **ON** (green) or **OFF** (grey).
-
 ## How It Works
 
-On every page load, the **content script** (`content.js`) reads the `enabled` flag from `chrome.storage.local` (default `true`). If protection is enabled, it injects `blocker.js` into the page's JavaScript context via a `<script>` tag loaded from `web_accessible_resources`. This avoids CSP issues and runs directly in the page's JS environment.
+### Authorization flow
+
+1. On install/startup, the **background service worker** (`background.js`) runs two checks:
+   - **Fast path** — `chrome.identity.getProfileUserInfo()` gets the Chrome profile's primary email
+   - **Full scan** — opens a background Google tab and scans it for signed-in account emails
+2. Detected emails are compared against the list fetched from the Cloudflare Worker
+3. If any email matches, the result (`authorized: true`) is cached in `chrome.storage.local`
+4. When a page loads, the **content script** (`content.js`) reads both the cached auth state and the on/off flag. Protection is injected only when **authorized && enabled**
+5. On Google pages the content script can additionally use a same-origin `ListAccounts` request, which is the most reliable way to enumerate signed-in accounts
+
+### Blocker injection
+
+When protection is active, the content script injects `blocker.js` into the page's JavaScript context via a `<script>` tag loaded from `web_accessible_resources`. This avoids CSP issues and runs directly in the page's JS environment.
 
 `blocker.js` creates a control element (`#lwys-ctv-port`) in the DOM and patches browser APIs:
 
@@ -57,20 +104,25 @@ On every page load, the **content script** (`content.js`) reads the `enabled` fl
 - `focus` / `blur` / `pagehide` / `mouseleave` / `lostpointercapture` — intercepted and suppressed
 - `requestAnimationFrame` — throttled to prevent hidden-state-based frame detection
 
-### Toggle
+### Toggle and auth changes
 
-The popup writes the `enabled` flag to `chrome.storage.local`. Content scripts in all open tabs listen for `chrome.storage.onChanged` and immediately switch the `data-enabled` attribute on the control element, which the patched APIs read to decide whether to block or allow. The background worker mirrors the state onto the toolbar badge.
+The popup writes the `enabled` flag to `chrome.storage.local`. Content scripts in all open tabs listen for `chrome.storage.onChanged` and immediately:
+
+- inject the blocker when **authorized && enabled**
+- switch `data-enabled` to `false` when protection is paused or authorization is lost
+
+The background worker mirrors the combined state onto the toolbar badge.
 
 ## Project Structure
 
 ```
 SmarTest-Extention/
 ├── manifest.json     # Extension manifest (MV3)
-├── background.js     # Service worker — default state and toolbar badge
-├── content.js        # Content script — reads the toggle flag, injects blocker.js
+├── background.js     # Service worker — authorization checks, toggle state, toolbar badge
+├── content.js        # Content script — auth gate, reads toggle, injects blocker.js
 ├── blocker.js        # Page-context script — patches browser APIs to block tracking
-├── popup.html        # Popup UI with the on/off switch
-├── popup.js          # Popup logic — reads and writes the toggle state
+├── popup.html        # Popup UI with auth status and the on/off switch
+├── popup.js          # Popup logic — reads auth/toggle state, refresh and toggle actions
 ├── icons/            # Extension icons
 │   ├── icon16.png
 │   ├── icon48.png
