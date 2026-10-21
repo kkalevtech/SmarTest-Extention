@@ -5,17 +5,28 @@
     port.id = 'lwys-ctv-port';
     port.dataset.enabled = document.documentElement.dataset.smartestEnabled === 'false' ? 'false' : 'true';
     port.dataset.hidden = 'false';
-    port.dataset.visibility = 'false';
-    port.dataset.pointercapture = 'false';
-    port.dataset.focus = 'false';
-    port.dataset.blur = 'false';
-    port.dataset.mouseleave = 'false';
     document.documentElement.append(port);
   }
 
   const block = e => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
 
   const isEnabled = () => port.dataset.enabled === 'true';
+
+  // Capture the native getter before it is patched below. It is only used
+  // internally to know when the tab is really hidden.
+  const nativeHiddenGetter = (() => {
+    const desc = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden') ||
+                 Object.getOwnPropertyDescriptor(document, 'hidden');
+    return desc && typeof desc.get === 'function' ? desc.get : null;
+  })();
+
+  function isReallyHidden() {
+    try {
+      return nativeHiddenGetter ? nativeHiddenGetter.call(document) : false;
+    } catch {
+      return false;
+    }
+  }
 
   // ── Fake fullscreen ──
   // Test/proctoring pages treat "no fullscreen element" as proof that the user
@@ -145,99 +156,70 @@
       };
     });
 
-  Object.defineProperty(document, 'visibilityState', {
-    configurable: true,
-    get() {
-      if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true' ? 'hidden' : 'visible'; }
-      return 'visible';
-    }
-  });
+  // Visibility state always reads as visible while protection is on. When it
+  // is off, the native values are passed through untouched.
+  patchDocumentGetter('visibilityState', () => isEnabled() ? 'visible' : undefined);
+  patchDocumentGetter('webkitVisibilityState', () => isEnabled() ? 'visible' : undefined);
+  patchDocumentGetter('hidden', () => isEnabled() ? false : undefined);
+  patchDocumentGetter('webkitHidden', () => isEnabled() ? false : undefined);
 
-  Object.defineProperty(document, 'webkitVisibilityState', {
-    configurable: true,
-    get() {
-      if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true' ? 'hidden' : 'visible'; }
-      return 'visible';
-    }
-  });
+  // Keep the real hidden state internally for the rAF fallback below, without
+  // ever exposing it to the page.
+  const updateHiddenFlag = () => {
+    port.dataset.hidden = isReallyHidden() ? 'true' : 'false';
+  };
+  updateHiddenFlag();
 
-  const once = { focus: true, visibilitychange: true, webkitvisibilitychange: true };
-
-  document.addEventListener('visibilitychange', e => {
+  const onVisibilityChange = e => {
+    updateHiddenFlag();
     port.dispatchEvent(new Event('state'));
-    if (port.dataset.enabled === 'true' && port.dataset.visibility !== 'false') {
-      if (once.visibilitychange) { once.visibilitychange = false; return; }
-      return block(e);
-    }
-  }, true);
+    if (isEnabled()) block(e);
+  };
 
-  document.addEventListener('webkitvisibilitychange', e => {
-    if (port.dataset.enabled === 'true' && port.dataset.visibility !== 'false') {
-      if (once.webkitvisibilitychange) { once.webkitvisibilitychange = false; return; }
-      return block(e);
-    }
-  }, true);
+  // Capture on both window and document so the page's listeners never see the
+  // tab switch. No "first event" is let through.
+  window.addEventListener('visibilitychange', onVisibilityChange, true);
+  document.addEventListener('visibilitychange', onVisibilityChange, true);
+  window.addEventListener('webkitvisibilitychange', onVisibilityChange, true);
+  document.addEventListener('webkitvisibilitychange', onVisibilityChange, true);
 
   window.addEventListener('pagehide', e => {
-    if (port.dataset.enabled === 'true' && port.dataset.visibility !== 'false') { block(e); }
+    if (isEnabled()) block(e);
   }, true);
 
   window.addEventListener('lostpointercapture', e => {
-    if (port.dataset.enabled === 'true' && port.dataset.pointercapture !== 'false') { block(e); }
+    if (isEnabled()) block(e);
   }, true);
 
-  Object.defineProperty(document, 'hidden', {
-    configurable: true,
-    get() {
-      if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true'; }
-      return false;
-    }
-  });
-
-  Object.defineProperty(document, 'webkitHidden', {
-    configurable: true,
-    get() {
-      if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true'; }
-      return false;
-    }
-  });
+  const isWindowTarget = e => e.target === document || e.target === window;
 
   Document.prototype.hasFocus = new Proxy(Document.prototype.hasFocus, {
     apply(target, self, args) {
-      if (port.dataset.enabled === 'true' && port.dataset.focus !== 'false') { return true; }
+      if (isEnabled()) return true;
       return Reflect.apply(target, self, args);
     }
   });
 
   const onfocus = e => {
-    if (port.dataset.enabled === 'true' && port.dataset.focus !== 'false') {
-      if (e.target === document || e.target === window) {
-        if (once.focus) { once.focus = false; return; }
-        return block(e);
-      }
-    }
+    if (isEnabled() && isWindowTarget(e)) block(e);
   };
   document.addEventListener('focus', onfocus, true);
   window.addEventListener('focus', onfocus, true);
 
   const onblur = e => {
-    if (port.dataset.enabled === 'true' && port.dataset.blur !== 'false') {
-      if (e.target === document || e.target === window) { return block(e); }
-    }
+    if (isEnabled() && isWindowTarget(e)) block(e);
   };
   document.addEventListener('blur', onblur, true);
   window.addEventListener('blur', onblur, true);
 
   window.addEventListener('mouseleave', e => {
-    if (port.dataset.enabled === 'true' && port.dataset.mouseleave !== 'false') {
-      if (e.target === document || e.target === window) { return block(e); }
-    }
+    if (isEnabled() && isWindowTarget(e)) block(e);
   }, true);
 
   let lastTime = 0;
   window.requestAnimationFrame = new Proxy(window.requestAnimationFrame, {
     apply(target, self, args) {
-      if (port.dataset.enabled === 'true' && port.dataset.hidden === 'true') {
+      if (isEnabled() && port.dataset.hidden === 'true') {
         const currTime = Date.now();
         const timeToCall = Math.max(0, 16 - (currTime - lastTime));
         const id = setTimeout(function() { args[0](performance.now()); }, timeToCall);
@@ -251,7 +233,7 @@
 
   window.cancelAnimationFrame = new Proxy(window.cancelAnimationFrame, {
     apply(target, self, args) {
-      if (port.dataset.enabled === 'true' && port.dataset.hidden === 'true') {
+      if (isEnabled() && port.dataset.hidden === 'true') {
         clearTimeout(args[0]);
       }
       return Reflect.apply(target, self, args);

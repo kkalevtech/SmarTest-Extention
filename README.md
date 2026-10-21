@@ -8,8 +8,8 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 - **On/off toggle** — pause or resume protection from the toolbar at any time
 - Fakes an active fullscreen session (`fullscreenElement`, `fullscreenEnabled`, and vendor-prefixed variants) so pages believe fullscreen is still on
 - Makes `requestFullscreen` / `exitFullscreen` succeed without changing the real window, and suppresses `fullscreenchange` / `fullscreenerror` events
-- Prevents visibility change detection (`visibilityState`, `hidden`, `webkit*`)
-- Blocks focus/blur events on `document` and `window`
+- Prevents visibility change detection — `visibilityState` / `hidden` (and `webkit*` aliases) always report `"visible"` / `false`, and `visibilitychange` / `webkitvisibilitychange` are suppressed on both `window` and `document`
+- Blocks focus/blur events on `document` and `window`, so switching tabs never fires a warning (no "first event" is let through)
 - Blocks `pagehide`, `mouseleave`, `lostpointercapture` events
 - Overrides `hasFocus()` to always return `true`
 - Throttles `requestAnimationFrame` when the page attempts to detect hidden state
@@ -107,6 +107,7 @@ When protection is active, the content script injects `blocker.js` into the page
 - `Document.prototype.exitFullscreen` resolves without leaving the faked fullscreen state
 - Real `fullscreenchange` / `fullscreenerror` events are suppressed, so pressing Escape cannot be detected
 - `document.visibilityState` / `document.hidden` — always report `"visible"` / `false`
+- `visibilitychange` / `webkitvisibilitychange` — captured early on both `window` and `document` and suppressed, so tab switches are invisible to the page
 - `Document.prototype.hasFocus` — always returns `true`
 - `focus` / `blur` / `pagehide` / `mouseleave` / `lostpointercapture` — intercepted and suppressed
 - `requestAnimationFrame` — throttled to prevent hidden-state-based frame detection
