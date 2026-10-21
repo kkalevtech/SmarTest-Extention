@@ -1,15 +1,10 @@
 {
   "manifest_version": 3,
   "name": "SmarTest Extension",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Browser extension for SmarTest",
   "permissions": [
-    "identity",
-    "identity.email",
-    "storage",
-    "activeTab",
-    "cookies",
-    "scripting"
+    "storage"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

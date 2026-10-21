@@ -5,11 +5,12 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      width: 220px;
+      width: 250px;
       padding: 20px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       text-align: center;
       background: #fafafa;
+      color: #333;
     }
     .logo {
       width: 48px; height: 48px; margin: 0 auto 12px;
@@ -20,22 +21,49 @@
     }
     h1 { font-size: 18px; color: #333; margin-bottom: 4px; }
     .subtitle { font-size: 12px; color: #888; margin-bottom: 20px; }
-    .icon { font-size: 36px; margin-bottom: 8px; }
-    .title { font-size: 16px; font-weight: 600; color: #444; margin-bottom: 6px; }
-    .desc { font-size: 12px; color: #888; line-height: 1.5; }
-    .detail { font-size: 11px; color: #aaa; margin-top: 8px; word-break: break-all; }
-    .refresh-btn {
-      margin-top: 14px; padding: 6px 20px; border: 1px solid #ccc;
-      border-radius: 6px; background: white; cursor: pointer; font-size: 12px; color: #555;
+
+    .card {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+      padding: 14px;
+      background: white;
+      border: 1px solid #e4e4e4;
+      border-radius: 10px;
+      text-align: left;
     }
-    .refresh-btn:active { background: #f0f0f0; }
-    .hint { font-size: 11px; color: #999; margin-top: 10px; line-height: 1.5; }
-    #statusIndicator {
-      padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 600;
-      margin-bottom: 16px;
+    .card-title { font-size: 14px; font-weight: 600; color: #444; margin-bottom: 3px; }
+    .card-desc { font-size: 11px; color: #888; line-height: 1.4; }
+
+    .switch {
+      flex: 0 0 auto;
+      position: relative;
+      width: 52px; height: 30px;
+      border: none; border-radius: 15px;
+      background: #c7c7c7;
+      cursor: pointer;
+      transition: background .2s ease;
+    }
+    .switch .knob {
+      position: absolute; top: 3px; left: 3px;
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      background: white;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+      transition: transform .2s ease;
+    }
+    .switch.on { background: #2e7d32; }
+    .switch.on .knob { transform: translateX(22px); }
+    .switch:focus-visible { outline: 2px solid #2196f3; outline-offset: 2px; }
+
+    .status {
+      margin-top: 14px; padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px; font-weight: 600;
     }
     .status-ok { background: #e8f5e9; color: #2e7d32; }
-    .status-no { background: #fce4ec; color: #c62828; }
+    .status-off { background: #eeeeee; color: #616161; }
+
+    .hint { font-size: 11px; color: #999; margin-top: 12px; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -43,15 +71,19 @@
   <h1>SmarTest</h1>
   <div class="subtitle">Extension</div>
 
-  <div id="statusIndicator" class="status-no">Checking...</div>
+  <div class="card">
+    <div>
+      <div class="card-title">Protection</div>
+      <div class="card-desc">Hide tab switches and focus loss, and keep fullscreen faked on.</div>
+    </div>
+    <button id="toggleBtn" class="switch" role="switch" aria-checked="true" aria-label="Toggle protection">
+      <span class="knob"></span>
+    </button>
+  </div>
 
-  <div class="icon" id="authIcon">🔒</div>
-  <div class="title" id="authTitle">Not authorized</div>
-  <div class="desc" id="authDesc">No session detected.</div>
-  <div class="detail" id="authDetail"></div>
+  <div id="statusIndicator" class="status status-ok">Protection is ON</div>
 
-  <button id="refreshBtn" class="refresh-btn">🔄 Refresh</button>
-  <div class="hint" id="hint"></div>
+  <div class="hint" id="hint">Tabs opened before installing the extension need a reload.</div>
 
   <script src="popup.js"></script>
 </body>

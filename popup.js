@@ -1,39 +1,41 @@
-async function refreshAuth() {
-  document.getElementById('statusIndicator').textContent = 'Checking...';
-  document.getElementById('statusIndicator').className = 'status-no';
-  await chrome.runtime.sendMessage({ action: 'checkAuth' });
-  await updateUI();
+const DEFAULT_ENABLED = true;
+
+const toggleBtn = document.getElementById('toggleBtn');
+const indicator = document.getElementById('statusIndicator');
+
+function isEnabled(value) {
+  return typeof value === 'boolean' ? value : DEFAULT_ENABLED;
 }
 
-async function updateUI() {
-  const auth = await chrome.storage.local.get(['authorized', 'authEmail', 'authMethod']);
-  const indicator = document.getElementById('statusIndicator');
-  const icon = document.getElementById('authIcon');
-  const title = document.getElementById('authTitle');
-  const desc = document.getElementById('authDesc');
-  const detail = document.getElementById('authDetail');
-  const hint = document.getElementById('hint');
+function render(enabled) {
+  toggleBtn.classList.toggle('on', enabled);
+  toggleBtn.setAttribute('aria-checked', String(enabled));
 
-  if (auth.authorized) {
-    indicator.textContent = '✅ Authorized';
-    indicator.className = 'status-ok';
-    icon.textContent = '✅';
-    title.textContent = 'Authorized';
-    desc.textContent = 'Protection active.';
-    detail.textContent = auth.authEmail || '';
-    hint.textContent = '';
-  } else {
-    indicator.textContent = '❌ Unauthorized';
-    indicator.className = 'status-no';
-    icon.textContent = '🔒';
-    title.textContent = 'Not authorized';
-    desc.textContent = 'No Google account matched the authorized list.';
-    detail.textContent = '';
-    hint.textContent = 'Make sure you are signed into Gmail in this browser, then click Refresh.';
-  }
+  indicator.textContent = enabled ? 'Protection is ON' : 'Protection is OFF';
+  indicator.className = enabled ? 'status status-ok' : 'status status-off';
+}
+
+async function loadState() {
+  const { enabled } = await chrome.storage.local.get('enabled');
+  render(isEnabled(enabled));
+}
+
+async function toggle() {
+  const { enabled } = await chrome.storage.local.get('enabled');
+  const next = !isEnabled(enabled);
+  // Content scripts in every open tab react to this change immediately.
+  await chrome.storage.local.set({ enabled: next });
+  render(next);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('refreshBtn').addEventListener('click', refreshAuth);
-  updateUI();
+  toggleBtn.addEventListener('click', toggle);
+
+  // Reflect changes made from other tabs / popups.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes.enabled) return;
+    render(isEnabled(changes.enabled.newValue));
+  });
+
+  loadState();
 });

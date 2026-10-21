@@ -1,115 +1,70 @@
-// ── Authorization gate ──
+// ── SmarTest content script ──
 //
-// KEY INSIGHT: MV3 service workers have an isolated cookie store, so
-// chrome.cookies.getAll() from background.js never sees Google session
-// cookies. The ONLY reliable way to detect Google accounts is from a
-// content script running on a Google page (same-origin credentialed fetch).
-//
-// Strategy:
-//   1. Fast path — cached authorized=true → inject blocker
-//   2. If current page is a Google property → always try ListAccounts
-//   3. Otherwise → respect cached state (fallback to background check)
+// No authentication. Every page simply follows the on/off flag stored in
+// chrome.storage.local. All open tabs are kept in sync via storage.onChanged.
 
-const GOOGLE_DOMAINS = [
-  'accounts.google.com',
-  'mail.google.com',
-  'google.com',
-  'www.google.com',
-  'drive.google.com',
-  'docs.google.com',
-  'youtube.com',
-  'www.youtube.com',
-];
+const DEFAULT_ENABLED = true;
 
-function isOnGooglePage() {
-  return GOOGLE_DOMAINS.some(d => location.hostname === d);
+let injected = false;
+
+function isEnabled(value) {
+  return typeof value === 'boolean' ? value : DEFAULT_ENABLED;
 }
 
-async function init() {
-  // 1. Fast path — already authorized
-  const cached = await chrome.storage.local.get('authorized');
-  if (cached.authorized === true) {
-    console.log('[SmarTest] Cached authorized — injecting blocker');
-    return injectBlocker();
-  }
+async function getEnabled() {
+  const { enabled } = await chrome.storage.local.get('enabled');
+  return isEnabled(enabled);
+}
 
-  // 2. On a Google page → same-origin ListAccounts WILL work
-  if (isOnGooglePage()) {
-    console.log('[SmarTest] On Google page, trying ListAccounts...');
-    const accounts = await fetchListAccounts();
-    console.log('[SmarTest] ListAccounts returned:', accounts);
-    if (accounts.length > 0) {
-      const resp = await chrome.runtime.sendMessage({ action: 'verifyAccounts', accounts });
-      console.log('[SmarTest] verifyAccounts response:', resp);
-      if (resp.authorized) {
-        return injectBlocker();
-      }
-    }
-    // If no accounts found even on Google page, user really isn't signed in
+// Tell blocker.js (running in the page context) whether to block or not.
+function setBlockerEnabled(enabled) {
+  const root = document.documentElement;
+  if (!root) return;
+
+  const flag = enabled ? 'true' : 'false';
+  root.dataset.smartestEnabled = flag;
+  const port = document.getElementById('lwys-ctv-port');
+  if (port) port.dataset.enabled = flag;
+}
+
+function injectBlocker(enabled) {
+  // Firefox can run content scripts before <html> exists.
+  if (!document.documentElement) {
+    document.addEventListener('DOMContentLoaded', () => injectBlocker(enabled), { once: true });
     return;
   }
 
-  // 3. Non-Google page with cached false — check with background anyway
-  if (cached.authorized === false) {
-    // Still try fetchListAccounts (works if Google cookies exist globally)
-    const accounts = await fetchListAccounts();
-    if (accounts.length > 0) {
-      const resp = await chrome.runtime.sendMessage({ action: 'verifyAccounts', accounts });
-      if (resp.authorized) return injectBlocker();
-    }
-    return; // Respect cached false
+  if (injected) {
+    setBlockerEnabled(enabled);
+    return;
   }
+  injected = true;
 
-  // 4. No cached state — ask background
-  try {
-    const response = await chrome.runtime.sendMessage({ action: 'checkAuth' });
-    if (response.authorized) injectBlocker();
-  } catch {}
-}
+  // blocker.js reads this attribute when it creates its control element.
+  setBlockerEnabled(enabled);
 
-async function fetchListAccounts(retries = 2) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      // Small delay so page's auth is settled (cookies ready)
-      if (attempt > 1) await new Promise(r => setTimeout(r, 1500));
-
-      const resp = await fetch('https://accounts.google.com/ListAccounts?pid=1', {
-        credentials: 'include',
-        headers: { 'Referer': 'https://www.google.com/' }
-      });
-      console.log(`[SmarTest] ListAccounts attempt ${attempt}: status ${resp.status}`);
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => '(unreadable)');
-        console.log(`[SmarTest] ListAccounts body (${resp.status}):`, body.substring(0, 300));
-        continue;
-      }
-
-      const text = await resp.text();
-      console.log(`[SmarTest] ListAccounts response length: ${text.length}`);
-
-      const emails = [];
-      const re = /["']?email["']?\s*:\s*["']([^"']+)["']/gi;
-      let m;
-      while ((m = re.exec(text)) !== null) {
-        const email = m[1].toLowerCase();
-        if (!emails.includes(email)) emails.push(email);
-      }
-      console.log(`[SmarTest] ListAccounts found emails:`, emails);
-      return emails;
-    } catch (e) {
-      console.log(`[SmarTest] fetchListAccounts attempt ${attempt} error:`, e.message);
-    }
-  }
-  return [];
-}
-
-// ── Blocker injection ──
-function injectBlocker() {
   const script = document.createElement('script');
   script.src = chrome.runtime.getURL('blocker.js');
-  script.onload = () => script.remove();
+  script.onload = () => {
+    setBlockerEnabled(enabled);
+    script.remove();
+  };
   document.documentElement.appendChild(script);
 }
+
+async function init() {
+  if (await getEnabled()) injectBlocker(true);
+}
+
+// React to the popup toggle in every open tab, no reload required.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.enabled) return;
+  const enabled = isEnabled(changes.enabled.newValue);
+  if (enabled) {
+    injectBlocker(true);
+  } else {
+    setBlockerEnabled(false);
+  }
+});
 
 init();

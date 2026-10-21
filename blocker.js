@@ -1,10 +1,9 @@
 (function(){
   let port = document.getElementById('lwys-ctv-port');
-  if (port) { port.remove(); }
-  else {
+  if (!port) {
     port = document.createElement('span');
     port.id = 'lwys-ctv-port';
-    port.dataset.enabled = 'true';
+    port.dataset.enabled = document.documentElement.dataset.smartestEnabled === 'false' ? 'false' : 'true';
     port.dataset.hidden = 'false';
     port.dataset.visibility = 'false';
     port.dataset.pointercapture = 'false';
@@ -16,25 +15,138 @@
 
   const block = e => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
 
-  const originalRequestFullscreen = Element.prototype.requestFullscreen;
-  Element.prototype.requestFullscreen = function(...args) {
-    if (port.dataset.enabled === 'true') {
-      console.warn('Fullscreen request blocked');
-      return Promise.reject(new Error('Fullscreen is disabled'));
-    }
-    return originalRequestFullscreen.apply(this, args);
-  };
+  const isEnabled = () => port.dataset.enabled === 'true';
 
-  const originalExitFullscreen = document.exitFullscreen;
-  document.exitFullscreen = function(...args) {
-    if (port.dataset.enabled === 'true') {
-      console.warn('Exit fullscreen request blocked');
-      return Promise.reject(new Error('Exiting fullscreen is disabled'));
-    }
-    return originalExitFullscreen.apply(this, args);
-  };
+  // ── Fake fullscreen ──
+  // Test/proctoring pages treat "no fullscreen element" as proof that the user
+  // left fullscreen. While protection is on, always report an active fullscreen
+  // session and pretend that fullscreen requests succeed.
+  let fakeFullscreenElement = null;
+  const syntheticEvents = new WeakSet();
+
+  const getFakeFullscreenElement = () => fakeFullscreenElement || document.documentElement || null;
+
+  function patchDocumentGetter(prop, getFakeValue) {
+    const protoDesc = Object.getOwnPropertyDescriptor(Document.prototype, prop);
+    const ownDesc = Object.getOwnPropertyDescriptor(document, prop);
+    const desc = protoDesc || ownDesc;
+    if (!desc || typeof desc.get !== 'function') return;
+
+    const original = desc.get;
+    const target = protoDesc ? Document.prototype : document;
+
+    try {
+      Object.defineProperty(target, prop, {
+        configurable: true,
+        enumerable: desc.enumerable,
+        get() {
+          if (isEnabled()) {
+            const value = getFakeValue();
+            if (value !== undefined) return value;
+          }
+          return original.call(this);
+        }
+      });
+    } catch {}
+  }
+
+  // All vendor-prefixed aliases a page might read.
+  [
+    'fullscreenElement',
+    'webkitFullscreenElement',
+    'webkitCurrentFullScreenElement',
+    'mozFullScreenElement',
+    'msFullscreenElement'
+  ].forEach(prop => patchDocumentGetter(prop, getFakeFullscreenElement));
+
+  [
+    'fullscreenEnabled',
+    'webkitFullscreenEnabled',
+    'mozFullScreenEnabled',
+    'msFullscreenEnabled',
+    'webkitIsFullScreen',
+    'mozFullScreen'
+  ].forEach(prop => patchDocumentGetter(prop, () => true));
+
+  const FULLSCREEN_EVENTS = [
+    'fullscreenchange',
+    'webkitfullscreenchange',
+    'mozfullscreenchange',
+    'MSFullscreenChange'
+  ];
+
+  function dispatchSyntheticFullscreenEvent(type) {
+    const event = new Event(type, { bubbles: true, cancelable: false });
+    syntheticEvents.add(event);
+    document.dispatchEvent(event);
+  }
+
+  function enterFakeFullscreen(element) {
+    fakeFullscreenElement = element;
+    // Real browsers fire the change event asynchronously, after the promise
+    // returned by requestFullscreen() settles.
+    setTimeout(() => {
+      if (isEnabled()) FULLSCREEN_EVENTS.forEach(dispatchSyntheticFullscreenEvent);
+    }, 0);
+  }
+
+  // Suppress real fullscreen transitions (e.g. the user pressing Escape) so
+  // pages never observe a "fullscreen exited" event.
+  [...FULLSCREEN_EVENTS, 'fullscreenerror', 'webkitfullscreenerror', 'mozfullscreenerror', 'MSFullscreenError']
+    .forEach(type => {
+      document.addEventListener(type, e => {
+        if (isEnabled() && !syntheticEvents.has(e)) block(e);
+      }, true);
+    });
+
+  const originalRequestFullscreen = Element.prototype.requestFullscreen;
+  if (typeof originalRequestFullscreen === 'function') {
+    Element.prototype.requestFullscreen = function(...args) {
+      if (isEnabled()) {
+        enterFakeFullscreen(this);
+        return Promise.resolve();
+      }
+      return originalRequestFullscreen.apply(this, args);
+    };
+  }
+
+  // Older prefixed entry points return undefined instead of a promise.
+  ['webkitRequestFullscreen', 'webkitRequestFullScreen', 'mozRequestFullScreen', 'msRequestFullscreen']
+    .forEach(name => {
+      const original = Element.prototype[name];
+      if (typeof original !== 'function') return;
+      Element.prototype[name] = function(...args) {
+        if (isEnabled()) {
+          enterFakeFullscreen(this);
+          return undefined;
+        }
+        return original.apply(this, args);
+      };
+    });
+
+  const originalExitFullscreen = Document.prototype.exitFullscreen;
+  if (typeof originalExitFullscreen === 'function') {
+    Document.prototype.exitFullscreen = function(...args) {
+      if (isEnabled()) {
+        // Stay "in fullscreen" from the page's point of view.
+        return Promise.resolve();
+      }
+      return originalExitFullscreen.apply(this, args);
+    };
+  }
+
+  ['webkitExitFullscreen', 'webkitCancelFullScreen', 'mozCancelFullScreen', 'msExitFullscreen']
+    .forEach(name => {
+      const original = Document.prototype[name];
+      if (typeof original !== 'function') return;
+      Document.prototype[name] = function(...args) {
+        if (isEnabled()) return undefined;
+        return original.apply(this, args);
+      };
+    });
 
   Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
     get() {
       if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true' ? 'hidden' : 'visible'; }
       return 'visible';
@@ -42,6 +154,7 @@
   });
 
   Object.defineProperty(document, 'webkitVisibilityState', {
+    configurable: true,
     get() {
       if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true' ? 'hidden' : 'visible'; }
       return 'visible';
@@ -74,6 +187,7 @@
   }, true);
 
   Object.defineProperty(document, 'hidden', {
+    configurable: true,
     get() {
       if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true'; }
       return false;
@@ -81,6 +195,7 @@
   });
 
   Object.defineProperty(document, 'webkitHidden', {
+    configurable: true,
     get() {
       if (port.dataset.enabled === 'false') { return port.dataset.hidden === 'true'; }
       return false;
