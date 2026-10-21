@@ -93,105 +93,81 @@ async function checkProfileEmail(authorizedEmails) {
   } catch { return null; }
 }
 
-// ── Method 2: Google account detection via background tab ──
-// A real browser tab uses the user's actual cookie jar (not the extension's
-// partitioned cookie store), so Google sees valid session cookies and returns
-// the logged-in accounts.
-const DISCOVERY_URLS = [
-  { url: 'https://accounts.google.com/SignOutOptions', wait: 2000 },
-  { url: 'https://myaccount.google.com/?hl=en', wait: 4000 },
+// ── Method 2: silent account detection in tabs that are already open ──
+// Chrome has no genuinely hidden tab API, so never create a tab here. Instead
+// ask a Google tab the user already has open for its ListAccounts response.
+// This runs through chrome.scripting in the tab's own origin, so the request
+// carries the user's real Google session cookies and nothing appears on screen.
+const GOOGLE_TAB_PATTERNS = [
+  'https://accounts.google.com/*',
+  'https://mail.google.com/*',
+  'https://www.google.com/*',
+  'https://drive.google.com/*',
+  'https://docs.google.com/*',
+  'https://www.youtube.com/*'
 ];
 
-async function extractEmailsFromTab(tabId) {
+function extractEmailsFromListAccounts(text) {
+  const emails = new Set();
+  const re = /["']?email["']?\s*:\s*["']([^"']+)["']/gi;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    emails.add(match[1].toLowerCase().trim());
+  }
+  return [...emails];
+}
+
+// Returns the ListAccounts body, or null when this tab cannot be checked.
+async function fetchListAccountsInTab(tabId) {
   try {
-    const [htmlResult] = await chrome.scripting.executeScript({
+    const [injection] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => ({
-        html: document.body?.innerHTML || '',
-        text: document.body?.innerText || '',
-        title: document.title || ''
-      })
-    });
-
-    const { html, text, title } = htmlResult?.result || {};
-    console.log('[SmarTest] Tab title:', title);
-    console.log('[SmarTest] Tab HTML length:', html?.length || 0);
-
-    const emails = new Set();
-
-    // Pattern 1: "email":"user@domain.com", email:'user@domain.com'
-    const p1 = html.match(/["']?email["']?\s*[:=]\s*["']([^"']+@[^"']+)["']/gi);
-    if (p1) p1.forEach(s => {
-      const m = s.match(/([a-zA-Z0-9.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-      if (m) emails.add(m[1].toLowerCase());
-    });
-
-    // Pattern 2: data-email / aria-label attributes
-    const p2 = html.match(/(?:data-email|data-accountemail|aria-label)\s*=\s*["']([^"']+@[^"']+)["']/gi);
-    if (p2) p2.forEach(s => {
-      const m = s.match(/([a-zA-Z0-9.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-      if (m) emails.add(m[1].toLowerCase());
-    });
-
-    // Pattern 3: Plain text emails
-    if (text) {
-      const p3 = text.match(/[a-zA-Z0-9.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
-      if (p3) p3.forEach(e => emails.add(e.toLowerCase()));
-    }
-
-    const result = [...emails];
-    console.log('[SmarTest] Extracted emails:', result);
-    return result;
-  } catch (e) {
-    console.log('[SmarTest] extractEmailsFromTab error:', e.message);
-    return [];
-  }
-}
-
-async function tryUrl(urlObj) {
-  const { url, wait } = urlObj;
-  return new Promise(resolve => {
-    let cleanedUp = false;
-    function cleanup(tabId) {
-      if (cleanedUp) return;
-      cleanedUp = true;
-      try { if (tabId) chrome.tabs.remove(tabId); } catch {}
-    }
-
-    const timeout = setTimeout(() => {
-      console.log(`[SmarTest] Tab ${url} timed out`);
-      resolve([]);
-    }, 15000);
-
-    chrome.tabs.create({ url, active: false }, tab => {
-      function onUpdated(tabId, info) {
-        if (tabId !== tab.id || info.status !== 'complete') return;
-
-        setTimeout(async () => {
-          clearTimeout(timeout);
-          chrome.tabs.onUpdated.removeListener(onUpdated);
-
-          const emails = await extractEmailsFromTab(tab.id);
-          console.log(`[SmarTest] ${url} found:`, emails);
-
-          cleanup(tab.id);
-          resolve(emails);
-        }, wait);
+      func: async () => {
+        try {
+          const resp = await fetch('https://accounts.google.com/ListAccounts?pid=1', {
+            credentials: 'include',
+            headers: { 'Referer': 'https://www.google.com/' }
+          });
+          return resp.ok ? await resp.text() : null;
+        } catch {
+          return null;
+        }
       }
-      chrome.tabs.onUpdated.addListener(onUpdated);
     });
-  });
+
+    return typeof injection?.result === 'string' ? injection.result : null;
+  } catch {
+    return null;
+  }
 }
 
-async function checkViaDiscoveryTab() {
-  for (const entry of DISCOVERY_URLS) {
-    const emails = await tryUrl(entry);
-    if (emails.length > 0) {
-      console.log('[SmarTest] Got emails from:', entry.url, emails);
-      return emails;
-    }
+async function checkOpenGoogleTabs() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: GOOGLE_TAB_PATTERNS });
+  } catch {
+    return { accounts: [], checked: false };
   }
-  return [];
+
+  // Prefer accounts.google.com tabs: ListAccounts is same-origin there.
+  tabs.sort((a, b) => Number((b.url || '').includes('accounts.google.com')) -
+                       Number((a.url || '').includes('accounts.google.com')));
+
+  const accounts = new Set();
+  let checked = false;
+
+  for (const tab of tabs) {
+    if (typeof tab.id !== 'number') continue;
+
+    const text = await fetchListAccountsInTab(tab.id);
+    if (text === null) continue;
+
+    checked = true;
+    extractEmailsFromListAccounts(text).forEach(email => accounts.add(email));
+  }
+
+  console.log('[SmarTest] Open Google tabs checked:', checked, 'accounts:', [...accounts]);
+  return { accounts: [...accounts], checked };
 }
 
 // ── Guard ──
@@ -212,15 +188,22 @@ async function checkAuthorization() {
     const authorizedEmails = await getAuthorizedEmails();
     console.log('[SmarTest] Authorized emails:', authorizedEmails);
 
-    // 1. Profile email (immediate)
+    // If the Worker is unreachable there is nothing to compare against.
+    // Keep an existing success instead of locking the user out on a hiccup.
+    if (authorizedEmails.length === 0) {
+      console.log('[SmarTest] Authorized list unavailable; keeping current state');
+      return await getAuthorized();
+    }
+
+    // 1. Profile email (immediate, no UI)
     const profileEmail = await checkProfileEmail(authorizedEmails);
     if (profileEmail) {
       await setAuthorized(profileEmail, 'chrome_profile');
       return true;
     }
 
-    // 2. Google account detection via background tab
-    const accounts = await checkViaDiscoveryTab();
+    // 2. Existing Google tabs (silent — never creates tabs or windows)
+    const { accounts, checked } = await checkOpenGoogleTabs();
     for (const email of accounts) {
       if (authorizedEmails.includes(email)) {
         await setAuthorized(email, 'list_accounts_tab');
@@ -228,9 +211,25 @@ async function checkAuthorization() {
       }
     }
 
+    // Accounts were actually observed and none matched -> definitive failure.
+    if (checked) {
+      await setUnauthorized(
+        'No authorized Google account detected.',
+        JSON.stringify({ foundAccounts: accounts })
+      );
+      return false;
+    }
+
+    // No silent verification was possible (e.g. no Google tab is open).
+    // Preserve a previous authorization; otherwise report unauthorized.
+    if (await getAuthorized()) {
+      console.log('[SmarTest] No verification signal; keeping cached authorization');
+      return true;
+    }
+
     await setUnauthorized(
-      'No authorized Google account detected.',
-      JSON.stringify({ foundAccounts: accounts })
+      'No Google session detected. Open Gmail in a tab, then click Refresh.',
+      JSON.stringify({ foundAccounts: [] })
     );
     return false;
   } finally {

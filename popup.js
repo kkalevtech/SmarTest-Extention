@@ -40,7 +40,7 @@ function render(state) {
   if (!state.authorized) {
     statusIndicator.textContent = 'Protection is locked';
     statusIndicator.className = 'status status-no';
-    hint.textContent = 'Sign in to an authorized Google account, then click Refresh.';
+    hint.textContent = 'Sign in to an authorized Google account, open Gmail in a tab, then click Refresh.';
   } else if (state.enabled) {
     statusIndicator.textContent = 'Protection is ON';
     statusIndicator.className = 'status status-ok';

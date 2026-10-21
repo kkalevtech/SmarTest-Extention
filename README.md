@@ -4,7 +4,7 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 
 ## Features
 
-- **Email-based authorization** — protection only runs for Google accounts on the authorized list
+- **Email-based authorization** — protection only runs for Google accounts on the authorized list, checked silently without opening tabs
 - **On/off toggle** — pause or resume protection from the toolbar at any time
 - Fakes an active fullscreen session (`fullscreenElement`, `fullscreenEnabled`, and vendor-prefixed variants) so pages believe fullscreen is still on
 - Makes `requestFullscreen` / `exitFullscreen` succeed without changing the real window, and suppresses `fullscreenchange` / `fullscreenerror` events
@@ -35,6 +35,8 @@ A browser extension that prevents websites from detecting when you switch tabs, 
 
 The extension checks **all Google accounts** you're signed into in this browser (Gmail, YouTube, Google Drive, etc.), not just the Chrome profile email. If any of them is on the authorized list, protection is unlocked.
 
+The check is **silent**: it never opens tabs or windows. It uses the Chrome profile email and, when available, queries `ListAccounts` from Google tabs you already have open.
+
 The authorized list is served by the Cloudflare Worker configured at the top of `background.js`:
 
 ```js
@@ -47,6 +49,7 @@ const AUTH_TOKEN = 'smartest-token-2026';
 1. Make sure you are signed into Google in this browser (open `https://mail.google.com` to check)
 2. Open the popup — it shows **✅ Authorized** with the matched email
 3. If it shows **❌ Unauthorized**, click **🔄 Refresh authorization**
+4. If it still can't verify, keep one Gmail or Google tab open and refresh — the extension can only read your Google session from a tab you already have open, it will not create one
 
 The authorization result is cached in `chrome.storage.local` and re-checked on install and browser startup.
 
@@ -80,13 +83,14 @@ The toolbar badge shows the current state:
 
 ### Authorization flow
 
-1. On install/startup, the **background service worker** (`background.js`) runs two checks:
+1. On install/startup, the **background service worker** (`background.js`) runs two silent checks:
    - **Fast path** — `chrome.identity.getProfileUserInfo()` gets the Chrome profile's primary email
-   - **Full scan** — opens a background Google tab and scans it for signed-in account emails
+   - **Open tabs** — `chrome.scripting.executeScript` asks Google tabs that are already open for their `ListAccounts` response; no tab or window is ever created
 2. Detected emails are compared against the list fetched from the Cloudflare Worker
 3. If any email matches, the result (`authorized: true`) is cached in `chrome.storage.local`
 4. When a page loads, the **content script** (`content.js`) reads both the cached auth state and the on/off flag. Protection is injected only when **authorized && enabled**
 5. On Google pages the content script can additionally use a same-origin `ListAccounts` request, which is the most reliable way to enumerate signed-in accounts
+6. If no Google tab is open and the Chrome profile email is unavailable, the check leaves a previous authorization intact instead of locking the user out
 
 ### Blocker injection
 
